@@ -51,7 +51,14 @@ export function resolveCloudSttConfig(characterId?: string): CloudSttConfig | nu
     return null;
 }
 
+/** 检测原生壳的录音桥是否可用（APK 环境）。 */
+function hasNativeRecorder(): boolean {
+    return typeof window !== "undefined"
+        && !!(window as any).AndroidShell?.startNativeRecord;
+}
+
 export function isCallRecordingSupported(): boolean {
+    if (hasNativeRecorder()) return true;
     return typeof navigator !== "undefined"
         && !!navigator.mediaDevices?.getUserMedia
         && typeof MediaRecorder !== "undefined";
@@ -64,13 +71,57 @@ export type ActiveCallRecording = {
     cancel: () => void;
 };
 
+/**
+ * 原生壳录音：getUserMedia 被系统拦截时的兜底。
+ * 壳用 AudioRecord 直接录，返回 WAV base64。
+ */
+function startNativeRecording(): ActiveCallRecording {
+    const shell = (window as any).AndroidShell;
+    const ok = shell.startNativeRecord();
+    if (!ok) throw new Error("原生录音启动失败（权限不足或硬件不可用）");
+
+    const maxTimer = window.setTimeout(() => {
+        try { shell.stopNativeRecord(); } catch { /* ignore */ }
+    }, MAX_RECORDING_MS);
+
+    return {
+        stop: () => new Promise<Blob | null>(resolve => {
+            window.clearTimeout(maxTimer);
+            try {
+                const base64: string = shell.stopNativeRecord();
+                if (!base64) { resolve(null); return; }
+                const binary = atob(base64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                resolve(new Blob([bytes], { type: "audio/wav" }));
+            } catch {
+                resolve(null);
+            }
+        }),
+        cancel: () => {
+            window.clearTimeout(maxTimer);
+            try { shell.cancelNativeRecord(); } catch { /* ignore */ }
+        },
+    };
+}
+
 /** 按下开始录音。resolve 时麦克风已经在录；权限被拒等失败会 reject。 */
 export async function startCallRecording(): Promise<ActiveCallRecording> {
     if (!isCallRecordingSupported()) throw new Error("当前环境不支持录音");
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {
+    // 优先尝试 WebView 标准路径（getUserMedia + MediaRecorder）
+    let stream: MediaStream | null = null;
+    try {
+        if (navigator.mediaDevices?.getUserMedia) {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+    } catch { /* getUserMedia 失败，下面走 fallback */ }
+
+    // getUserMedia 被系统拦截（如 OPPO ColorOS）→ fallback 到原生壳录音
+    if (!stream) {
+        if (hasNativeRecorder()) return startNativeRecording();
         throw new Error("麦克风权限被拒绝或不可用");
-    });
+    }
 
     // 优先 opus：体积小、转写接口普遍支持
     const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
@@ -85,7 +136,7 @@ export async function startCallRecording(): Promise<ActiveCallRecording> {
     let resolveStop: ((blob: Blob | null) => void) | null = null;
 
     const releaseMic = () => {
-        try { stream.getTracks().forEach(track => track.stop()); } catch { /* ignore */ }
+        try { stream!.getTracks().forEach(track => track.stop()); } catch { /* ignore */ }
     };
 
     recorder.ondataavailable = event => {

@@ -82,6 +82,9 @@ class MainActivity : AppCompatActivity() {
     /** 网页消息通知的自增 id：同一条消息覆盖同一 id 会让新通知顶掉旧的，故逐条递增。 */
     private var webNotifId = 500
 
+    /** 原生录音器：WebView getUserMedia 被系统拦截时的兜底方案。 */
+    private val nativeRecorder by lazy { NativeAudioRecorder(this) }
+
     /** 感知桥：把电量/网络/应用名/步数交给网页（边界说明见 PerceptionBridge）。 */
     private val perception by lazy { PerceptionBridge(this) }
 
@@ -552,6 +555,23 @@ class MainActivity : AppCompatActivity() {
     inner class ShellBridge {
         @JavascriptInterface
         fun getVersion(): String = VERSION
+
+        // ── 原生录音桥（WebView getUserMedia 被 ColorOS 等系统拦截时的兜底）──
+
+        /** 开始原生录音。返回 true=已开始；false=权限不足或硬件不可用。 */
+        @JavascriptInterface
+        fun startNativeRecord(): Boolean = nativeRecorder.start()
+
+        /**
+         * 停止录音并返回 WAV 格式的 base64 字符串（不含 data: 前缀）。
+         * 没有录到内容返回空串。
+         */
+        @JavascriptInterface
+        fun stopNativeRecord(): String = nativeRecorder.stopAndGetBase64()
+
+        /** 取消录音，丢弃已录内容。 */
+        @JavascriptInterface
+        fun cancelNativeRecord() = nativeRecorder.cancel()
 
         /** 实测系统状态栏高度（CSS px）。页面侧兜底轮询用；主要注入路径见 injectStatusBarHeight。 */
         @JavascriptInterface
