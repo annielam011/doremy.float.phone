@@ -165,6 +165,8 @@ export type VoiceApiConfig = {
     region?: string;
     model?: string;
     sttModel?: string;
+    /** 识别提示词：随录音一起发给 /audio/transcriptions 的 prompt 参数，引导输出风格（如粤语夹英文保留英文原词）。留空不发送。 */
+    sttPrompt?: string;
     defaultVoice: string;
     languageBoost?: string;
     /** Minimax voice_setting.speed. Missing values keep the legacy 1.0x behavior. */

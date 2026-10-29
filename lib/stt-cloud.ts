@@ -13,6 +13,8 @@ export type CloudSttConfig = {
     baseUrl: string;
     apiKey: string;
     model: string;
+    /** 可选：Whisper prompt，引导识别风格；空则不发送 */
+    prompt?: string;
 };
 
 const DEFAULT_STT_MODEL = "whisper-1";
@@ -28,6 +30,7 @@ function toCloudSttConfig(config: VoiceApiConfig | undefined | null): CloudSttCo
         baseUrl: (config.baseUrl || "https://api.openai.com/v1").trim().replace(/\/+$/, ""),
         apiKey: config.apiKey.trim(),
         model: config.sttModel?.trim() || DEFAULT_STT_MODEL,
+        prompt: config.sttPrompt?.trim() || undefined,
     };
 }
 
@@ -193,6 +196,7 @@ export async function transcribeAudioBlob(blob: Blob, config: CloudSttConfig): P
     const form = new FormData();
     form.set("model", config.model);
     form.set("file", blob, `speech.${ext}`);
+    if (config.prompt) form.set("prompt", config.prompt);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TRANSCRIBE_TIMEOUT_MS);

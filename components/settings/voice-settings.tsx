@@ -737,6 +737,18 @@ export function VoiceSettings() {
                                                     />
                                                     <span className="menu-desc ml-1">通话「按住说话」用它把录音转成文字（非 iOS 设备生效），走同一个接口地址与密钥</span>
                                                 </div>
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="menu-desc ml-1">识别提示词 (STT Prompt)</label>
+                                                    <textarea
+                                                        value={config.sttPrompt || ""}
+                                                        onChange={(e) => updateConfig(config.id, { sttPrompt: e.target.value })}
+                                                        placeholder="例如：我今日好busy，send個file俾你，今晚dinner食咩好？OT到好夜。"
+                                                        rows={3}
+                                                        className="ui-input"
+                                                        style={{ resize: "vertical", minHeight: 72 }}
+                                                    />
+                                                    <span className="menu-desc ml-1">选填。写一段你平时说话风格的示范文字，模型会倾向照这个风格输出（如粤语夹英文保留英文原词）。仅 whisper 类模型支持，留空不发送</span>
+                                                </div>
                                             </>
                                         )}
 
