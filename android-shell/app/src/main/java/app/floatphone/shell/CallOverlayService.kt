@@ -850,13 +850,20 @@ class CallOverlayService : Service() {
      * 页面收到事件时已在前台，切回全屏不会有延迟感。
      */
     private fun bringAppToFront() {
-        ShellBus.dispatchOverlayEvent("restore", JSONObject().put("callId", currentCallId))
+        // 先让宿主 Activity 回到前台并进入 React/JS 页面生命周期，再派恢复事件。
+        // 原先先 dispatch、后 startActivity：WebView 仍在后台时恢复事件可能丢失；
+        // 网页留在「已最小化」/旧页面，回到通话组件时把同一通误判为需重新发起。
         runCatching {
             startActivity(
                 Intent(this, MainActivity::class.java)
                     // 浮窗只负责恢复正在进行的通话；复用现有 Activity，不触发拨号/深链重进。
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             )
+            main.postDelayed({
+                if (!stopped && ShellBus.isWebAlive()) {
+                    ShellBus.dispatchOverlayEvent("restore", JSONObject().put("callId", currentCallId))
+                }
+            }, 250)
         }
     }
 
