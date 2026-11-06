@@ -854,6 +854,7 @@ class CallOverlayService : Service() {
         runCatching {
             startActivity(
                 Intent(this, MainActivity::class.java)
+                    // 浮窗只负责恢复正在进行的通话；复用现有 Activity，不触发拨号/深链重进。
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             )
         }
