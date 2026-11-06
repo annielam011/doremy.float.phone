@@ -61,8 +61,6 @@ export function useShellCallOverlay(params: UseShellCallOverlayParams) {
 
     // 本次通话的 id：原生事件带上它，用来确认事件属于当前这一通
     const callIdRef = useRef(`call-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-    // 防止原生浮窗和 Activity 恢复时序竞态导致 restore 事件被重复处理。
-    const restoreEventHandledRef = useRef(false);
 
     // 回调与取值的 ref 快照（每次渲染刷新，effect 里读最新值）
     const handlersRef = useRef(params);
