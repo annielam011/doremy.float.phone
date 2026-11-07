@@ -23,7 +23,6 @@ import { CallVolumeControl } from "./call-volume-control";
 import { startIncomingCallVibration } from "@/lib/call-vibration";
 import { useCallScreenSounds } from "@/lib/chat-sound";
 import { CallMiniWindow } from "./call-mini-window";
-import { useFreeCallConversation } from "./use-free-call-conversation";
 import { useShellCallOverlay } from "./use-shell-call-overlay";
 import { CallAutoChatControl } from "./call-auto-chat-control";
 import { useCallAutoChat } from "./use-call-auto-chat";
