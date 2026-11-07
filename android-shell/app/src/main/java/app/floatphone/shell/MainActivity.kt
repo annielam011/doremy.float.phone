@@ -84,6 +84,8 @@ class MainActivity : AppCompatActivity() {
 
     /** 原生录音器：WebView getUserMedia 被系统拦截时的兜底方案。 */
     private val nativeRecorder by lazy { NativeAudioRecorder(this) }
+    /** 独立于按住说话的录音器；两个模式不能共用 AudioRecord 状态。 */
+    private val freeConversationRecorder by lazy { NativeAudioRecorder(this) }
 
     /** 感知桥：把电量/网络/应用名/步数交给网页（边界说明见 PerceptionBridge）。 */
     private val perception by lazy { PerceptionBridge(this) }
@@ -561,6 +563,19 @@ class MainActivity : AppCompatActivity() {
         /** 开始原生录音。返回 true=已开始；false=权限不足或硬件不可用。 */
         @JavascriptInterface
         fun startNativeRecord(): Boolean = nativeRecorder.start()
+
+        /** 独立的自由对话录音器：不与按住说话共享状态，避免两个输入模式互相取消。 */
+        @JavascriptInterface
+        fun startNativeFreeRecord(): Boolean = freeConversationRecorder.startRolling(12)
+
+        @JavascriptInterface
+        fun stopNativeFreeRecord(): String = freeConversationRecorder.stopAndGetBase64()
+
+        @JavascriptInterface
+        fun cancelNativeFreeRecord() = freeConversationRecorder.cancel()
+
+        @JavascriptInterface
+        fun getNativeFreeRecordRms(): Double = freeConversationRecorder.getRms()
 
         /**
          * 停止录音并返回 WAV 格式的 base64 字符串（不含 data: 前缀）。

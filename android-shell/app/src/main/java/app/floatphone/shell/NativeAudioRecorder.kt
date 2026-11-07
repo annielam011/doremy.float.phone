@@ -31,6 +31,23 @@ class NativeAudioRecorder(private val context: Context) {
     @Volatile
     private var isRecording = false
     private val pcmBuffer = ByteArrayOutputStream()
+    @Volatile private var latestRms = 0.0
+
+    /** RMS 音量，供自由对话语音活动检测使用。 */
+    fun getRms(): Double = latestRms
+
+    /** 自由对话专用：按固定采样节拍保留最近 12 秒音频，避免静默时不断增大 WAV。 */
+    @Synchronized
+    fun startRolling(maxSeconds: Int = 12): Boolean {
+        rollingMaxBytes = SAMPLE_RATE * 2 * maxSeconds.coerceIn(4, 30)
+        rollingMode = true
+        if (startInternal()) return true
+        rollingMode = false
+        return false
+    }
+
+    private var rollingMode = false
+    private var rollingMaxBytes = SAMPLE_RATE * 2 * 12
 
     /**
      * 开始录音。
@@ -38,6 +55,11 @@ class NativeAudioRecorder(private val context: Context) {
      */
     @Synchronized
     fun start(): Boolean {
+        rollingMode = false
+        return startInternal()
+    }
+
+    private fun startInternal(): Boolean {
         if (isRecording) return true
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
@@ -59,6 +81,7 @@ class NativeAudioRecorder(private val context: Context) {
         }
 
         pcmBuffer.reset()
+        latestRms = 0.0
         audioRecord = recorder
         isRecording = true
 
@@ -69,7 +92,25 @@ class NativeAudioRecorder(private val context: Context) {
             while (isRecording) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0) {
-                    synchronized(pcmBuffer) { pcmBuffer.write(buffer, 0, read) }
+                    var sum = 0.0
+                    var samples = 0
+                    var i = 0
+                    while (i + 1 < read) {
+                        val sample = ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xff)).toShort().toInt()
+                        sum += sample.toDouble() * sample
+                        samples++
+                        i += 2
+                    }
+                    latestRms = if (samples > 0) kotlin.math.sqrt(sum / samples) else 0.0
+                    synchronized(pcmBuffer) {
+                        if (rollingMode && pcmBuffer.size() + read > rollingMaxBytes) {
+                            val old = pcmBuffer.toByteArray()
+                            pcmBuffer.reset()
+                            val excess = (old.size + read - rollingMaxBytes).coerceAtMost(old.size)
+                            pcmBuffer.write(old, excess, old.size - excess)
+                        }
+                        pcmBuffer.write(buffer, 0, read)
+                    }
                 }
             }
         }, "NativeAudioRecorder").apply { start() }
@@ -83,7 +124,11 @@ class NativeAudioRecorder(private val context: Context) {
      */
     @Synchronized
     fun stopAndGetBase64(): String {
-        if (!isRecording) return ""
+        if (!isRecording) {
+            rollingMode = false
+            latestRms = 0.0
+            return ""
+        }
         isRecording = false
 
         try { recordingThread?.join(2000) } catch (_: Exception) {}
@@ -92,6 +137,8 @@ class NativeAudioRecorder(private val context: Context) {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        rollingMode = false
+        latestRms = 0.0
 
         val pcmData: ByteArray
         synchronized(pcmBuffer) { pcmData = pcmBuffer.toByteArray() }
@@ -104,13 +151,20 @@ class NativeAudioRecorder(private val context: Context) {
     /** 取消录音，丢弃内容。 */
     @Synchronized
     fun cancel() {
-        if (!isRecording) return
+        if (!isRecording) {
+            rollingMode = false
+            latestRms = 0.0
+            pcmBuffer.reset()
+            return
+        }
         isRecording = false
         try { recordingThread?.join(2000) } catch (_: Exception) {}
         recordingThread = null
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        rollingMode = false
+        latestRms = 0.0
         pcmBuffer.reset()
     }
 

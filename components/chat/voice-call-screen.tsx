@@ -15,6 +15,7 @@ import { createSTTSession, type STTSession } from "@/lib/stt-service";
 import { resolveVoiceConfig, synthesizeSpeech, playAudioBlob, playAudioBlobViaMediaElement, setCallAudioSessionActive } from "@/lib/tts-service";
 import { isCallRecordingSupported, resolveCloudSttConfig } from "@/lib/stt-cloud";
 import { useHoldToTalk } from "./use-hold-to-talk";
+import { useFreeConversation } from "./use-free-conversation";
 import { suspendKeepAliveForCall, resumeKeepAliveAfterCall } from "@/lib/use-weixin-bridge";
 import { BilingualTextBlock } from "./message-bubble";
 import { splitBilingualText } from "@/lib/bilingual-text";
@@ -124,6 +125,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const [subtitles, setSubtitles] = useState<SubtitleEntry[]>([]);
     const [interimText, setInterimText] = useState("");
     const [isMuted, setIsMuted] = useState(false);
+    const [freeConversation, setFreeConversation] = useState(false);
     const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice");
     const [typedText, setTypedText] = useState("");
     const [bgImageResolved, setBgImageResolved] = useState<string | null>(null);
@@ -172,6 +174,9 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const minimizedRef = useRef(false);
     const stateRef = useRef<string>("CONNECTING");
     const interimTextRef = useRef<string>("");  // ref 版本，闭包安全
+    const freeConversationRef = useRef(false);
+    const freeInterruptedRef = useRef(false);
+    const activeTurnRef = useRef(0);
     const sttWarningShownRef = useRef(false);
     // 自动搭话：下一次可开口的时刻（毫秒时间戳）
     const autoChatDeadlineRef = useRef<number>(0);
@@ -197,6 +202,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const userNameRef = useRef<string>(_initUi?.name || "你");
 
     // Keep refs in sync
+    freeConversationRef.current = freeConversation;
     useEffect(() => { stateRef.current = callState; }, [callState]);
     useEffect(() => { minimizedRef.current = minimized; }, [minimized]);
 
@@ -476,6 +482,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     // ── Full conversation turn ──────────────────────
 
     const runConversationTurn = useCallback(async (userText?: string) => {
+        const turnId = ++activeTurnRef.current;
+        freeInterruptedRef.current = false;
         // 用户开口：自动搭话重新计数（上限按「你开口后」重新算）
         if (userText) {
             autoTurnsRef.current = 0;
@@ -512,8 +520,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 appTags: ["chat", "voice"],
             }));
 
-            // Bail if call ended during generation
-            if (stateRef.current === "ENDED") return;
+            // Bail if call ended or this turn was superseded while generation was in flight.
+            if (stateRef.current === "ENDED" || turnId !== activeTurnRef.current) return;
 
             // 4. Process response
             const { cleanParts, messageIds, speechMessageIds } = processAIResponse(aiResponseText);
@@ -521,6 +529,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             const speechText = stripBilingualForSpeech(displayText);
 
             if (!displayText) {
+                if (turnId !== activeTurnRef.current) return;
                 // 这轮角色没说出内容：下次等更久，避免空转连发
                 emptyAutoTurnsRef.current += 1;
                 scheduleNextAutoChat();
@@ -543,7 +552,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             if (voiceConfig) {
                 try {
                     const audioBlob = await synthesizeSpeech(speechText, voiceConfig);
-                    if (stateRef.current === "ENDED") return;
+                    if (stateRef.current === "ENDED" || turnId !== activeTurnRef.current) return;
 
                     if (audioBlob) {
                         // 存一份给「重听」用：不然每次重听都要重新调一次 TTS API，
@@ -576,6 +585,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 }
             }
 
+            // 用户打断后可能已开始新一轮；旧回合绝不能覆盖新一轮状态。
+            if (turnId !== activeTurnRef.current || (freeConversationRef.current && freeInterruptedRef.current)) return;
             if (stateRef.current !== "ENDED") {
                 emptyAutoTurnsRef.current = 0;
                 scheduleNextAutoChat();
@@ -583,6 +594,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             }
         } catch (error: any) {
             console.error("[VoiceCall] Error:", error);
+            if (turnId !== activeTurnRef.current) return;
             if (stateRef.current !== "ENDED") {
                 setSubtitles(prev => [...prev, {
                     id: `err-${Date.now()}`,
@@ -789,9 +801,37 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     }, [callState, runConversationTurn]);
 
     // 按住说话（非 iOS）：按下录音，松开转写后走对话轮
+    const freeInput = useFreeConversation({
+        enabled: freeConversation,
+        muted: isMuted || inputMode !== "voice" || minimized,
+        callStateRef: stateRef,
+        characterId: session.contactId,
+        onSpeechStart: (interruptingAssistant) => {
+            freeInterruptedRef.current = interruptingAssistant;
+            if (interruptingAssistant) {
+                activeTurnRef.current += 1;
+                audioAbortRef.current?.();
+                audioAbortRef.current = null;
+            }
+            setInterimText("");
+            setCallState("USER_SPEAKING");
+        },
+        onTranscribeStart: () => setCallState("PROCESSING"),
+        onTranscript: (text) => {
+            freeInterruptedRef.current = false;
+            void runConversationTurn(text);
+        },
+        onError: (message) => {
+            freeInterruptedRef.current = false;
+            setSubtitles(prev => [...prev, { id: `free-error-${Date.now()}`, role: "assistant", text: `⚠️ ${message}` }]);
+            if (stateRef.current !== "ENDED") setCallState("IDLE");
+        },
+    });
+
+    // 挂断必须释放独立的自由对话录音器。
     const holdInput = useHoldToTalk({
         characterId: session.contactId,
-        canStart: () => stateRef.current === "IDLE",
+        canStart: () => !freeConversationRef.current && stateRef.current === "IDLE",
         onRecordingStart: () => {
             setInterimText("");
             if (stateRef.current === "IDLE") setCallState("USER_SPEAKING");
@@ -812,9 +852,12 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const handleHangup = useCallback(() => {
         // 挂断时收掉原生浮窗（安卓壳里）
         stopShellCallOverlay();
+        activeTurnRef.current += 1;
+        setFreeConversation(false);
         setCallState("ENDED");
 
-        // Stop any ongoing STT
+        // Stop any ongoing STT and free conversation recording
+        freeInput.stop();
         if (sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
@@ -841,7 +884,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
         // Delay then close
         setTimeout(() => onEnd(), 1500);
-    }, [session.id, callDuration, onEnd]);
+    }, [session.id, callDuration, onEnd, freeInput.stop]);
 
     // 保持 ref 指向最新的 handleHangup（原生浮窗的挂断事件要调到它）
     useEffect(() => { hangupRef.current = handleHangup; }, [handleHangup]);
@@ -1406,13 +1449,26 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                     </form>
                 )}
 
-                {/* 按住说话提示/错误行 */}
+                {/* 按住说话提示/错误行；自由模式打开后不再提示按键操作 */}
                 {holdToTalk && inputMode === "voice" && callState !== "CONNECTING" && callState !== "ENDED" && (
                     <div className="text-center ts-12 opacity-80 px-5">
-                        {holdInput.recState === "recording" ? "松开发送"
+                        {freeConversation ? (callState === "USER_SPEAKING" ? "正在聆听…说完静音 3 秒自动发送" : "自由对话中 · 开口即可打断角色")
+                            : holdInput.recState === "recording" ? "松开发送"
                             : holdInput.recState === "transcribing" ? "识别中…"
                             : holdInput.error || "按住下方麦克风说话"}
                     </div>
+                )}
+
+                {freeInput.supported && callState !== "CONNECTING" && callState !== "ENDED" && (
+                    <button
+                        type="button"
+                        onClick={() => {
+                            freeInterruptedRef.current = false;
+                            setFreeConversation(value => !value);
+                        }}
+                        aria-pressed={freeConversation}
+                        style={{ alignSelf: "center", marginBottom: 6, padding: "7px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,.35)", background: freeConversation ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.15)", color: freeConversation ? "#222" : "#fff", fontSize: 12 }}
+                    >{freeConversation ? "自由对话已开启 · 点此关闭" : "开启自由对话"}</button>
                 )}
 
                 {/* Bottom controls */}
@@ -1424,7 +1480,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                         <>
                             {/* 输入方式切换（按住说话模式不需要持续开麦，静音位改放 Aa 切换） */}
                             <button
-                                onClick={handleInputModeToggle}
+                                onClick={() => {
+                                    if (freeConversation) setFreeConversation(false);
+                                    handleInputModeToggle();
+                                }}
                                 className="ui-call-btn ui-call-btn-muted"
                                 aria-label={inputMode === "voice" ? "切换到文字输入" : "切换到语音输入"}
                             >
@@ -1451,7 +1510,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                                 }
                                 aria-label={inputMode === "text" ? "切换到语音输入" : "按住说话"}
                                 title={inputMode === "text" ? "切换到语音输入" : "按住说话"}
-                                {...(inputMode === "voice" ? holdInput.pressHandlers : { onClick: handleInputModeToggle })}
+                                disabled={freeConversation && inputMode === "voice"}
+                                {...(inputMode === "voice" && !freeConversation ? holdInput.pressHandlers : { onClick: inputMode === "text" ? handleInputModeToggle : undefined })}
                             >
                                 {inputMode === "text" ? (
                                     <span className="ui-call-input-text-icon">Aa</span>
