@@ -562,10 +562,6 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun startNativeRecord(): Boolean = nativeRecorder.start()
 
-        /** 当前原生录音音量 RMS（无录音时为 0），供通话免按键语音活动检测轮询。 */
-        @JavascriptInterface
-        fun getNativeRecordRms(): Double = nativeRecorder.getRms()
-
         /**
          * 停止录音并返回 WAV 格式的 base64 字符串（不含 data: 前缀）。
          * 没有录到内容返回空串。
