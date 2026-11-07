@@ -62,7 +62,13 @@ export function getActiveCallServerSnapshot(): ActiveCall | null {
     return null;
 }
 
-/** 发起通话（或来电被接听后建立通话）。同会话重复调用视为重拨。 */
+/**
+ * 发起通话（或来电被接听后建立通话）。
+ *
+ * 同一会话、同一类型已经在通话时，重复入口必须视为「恢复当前通话」，不能重拨。
+ * 返回主页后聊天室/桌面的旧事件可能再次调用 startCall；旧实现会生成新 callId，
+ * React 因 key 改变整棵重挂，界面就重新进入 CONNECTING，表现为浮窗自动重拨。
+ */
 export function startCall(input: {
     sessionId: string;
     characterId: string;
@@ -70,6 +76,13 @@ export function startCall(input: {
     initiator: "user" | "character";
     initiatorName?: string;
 }): void {
+    if (activeCall && activeCall.sessionId === input.sessionId && activeCall.kind === input.kind) {
+        if (activeCall.minimized) {
+            activeCall = { ...activeCall, minimized: false };
+            emit();
+        }
+        return;
+    }
     activeCall = {
         ...input,
         minimized: false,
