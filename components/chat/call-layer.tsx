@@ -65,11 +65,14 @@ export function CallLayer() {
             onRestore: restoreCall,
             onEnd: endCall,
         };
-        // 缩成小窗时不套全屏容器：小窗由 portal 挂到 body，
-        // 而这层空壳会盖住整个桌面、挡住下面对手机的操作。
-        if (call.minimized) return <GroupCallScreen {...groupProps} />;
+        // 全屏与小窗必须保持同一棵 React 结构。之前缩小时直接返回 GroupCallScreen、
+        // 恢复时又在外面套 div，父节点类型变化会让 React 卸载并重建整个群通话组件：
+        // 初始化 effect 再跑一次，于是缩小一次重拨一次、点浮窗恢复又重拨一次。
+        // 小窗本体会 portal 到 body；缩小时只把稳定外壳收成 0 尺寸，避免挡住桌面。
         return (
-            <div className="absolute inset-0 z-[100]">
+            <div
+                className={call.minimized ? "fixed left-0 top-0 h-0 w-0 pointer-events-none" : "absolute inset-0 z-[100]"}
+            >
                 <GroupCallScreen {...groupProps} />
             </div>
         );
