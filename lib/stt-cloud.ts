@@ -13,7 +13,7 @@ export type CloudSttConfig = {
     baseUrl: string;
     apiKey: string;
     model: string;
-    /** 可选：Whisper prompt，引导识别风格；空则不发送 */
+    /** 可选：Whisper prompt，引导识别风格；空则使用粤语友好的默认提示 */
     prompt?: string;
 };
 
@@ -196,7 +196,9 @@ export async function transcribeAudioBlob(blob: Blob, config: CloudSttConfig): P
     const form = new FormData();
     form.set("model", config.model);
     form.set("file", blob, `speech.${ext}`);
-    if (config.prompt) form.set("prompt", config.prompt);
+    // 粤语自由说话常被模型自动“翻译”为普通话；没有自定义 prompt 时给一个
+    // 保守默认值，要求按原语言逐字转写。用户自己的 prompt 仍然优先。
+    form.set("prompt", config.prompt || "请按说话者实际使用的语言原样转写；粤语请保留粤语口语和用字，不要翻译成普通话。夹杂英文时保留英文原词。");
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TRANSCRIBE_TIMEOUT_MS);

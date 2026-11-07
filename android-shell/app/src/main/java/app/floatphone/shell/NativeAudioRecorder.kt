@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Base64
 import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
@@ -26,6 +28,8 @@ class NativeAudioRecorder(private val context: Context) {
     }
 
     private var audioRecord: AudioRecord? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
     private var recordingThread: Thread? = null
 
     @Volatile
@@ -70,7 +74,10 @@ class NativeAudioRecorder(private val context: Context) {
 
         val recorder = try {
             @Suppress("MissingPermission")
-            AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL, ENCODING, bufferSize)
+            AudioRecord(
+                if (rollingMode) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE, CHANNEL, ENCODING, bufferSize,
+            )
         } catch (_: Exception) {
             return false
         }
@@ -86,6 +93,14 @@ class NativeAudioRecorder(private val context: Context) {
         isRecording = true
 
         recorder.startRecording()
+        if (rollingMode && AcousticEchoCanceler.isAvailable()) {
+            runCatching { AcousticEchoCanceler.create(recorder.audioSessionId)?.also { it.enabled = true } }
+                .onSuccess { echoCanceler = it }
+        }
+        if (rollingMode && NoiseSuppressor.isAvailable()) {
+            runCatching { NoiseSuppressor.create(recorder.audioSessionId)?.also { it.enabled = true } }
+                .onSuccess { noiseSuppressor = it }
+        }
 
         recordingThread = Thread({
             val buffer = ByteArray(bufferSize)
@@ -135,6 +150,8 @@ class NativeAudioRecorder(private val context: Context) {
         recordingThread = null
 
         audioRecord?.stop()
+        echoCanceler?.release(); echoCanceler = null
+        noiseSuppressor?.release(); noiseSuppressor = null
         audioRecord?.release()
         audioRecord = null
         rollingMode = false
@@ -161,6 +178,8 @@ class NativeAudioRecorder(private val context: Context) {
         try { recordingThread?.join(2000) } catch (_: Exception) {}
         recordingThread = null
         audioRecord?.stop()
+        echoCanceler?.release(); echoCanceler = null
+        noiseSuppressor?.release(); noiseSuppressor = null
         audioRecord?.release()
         audioRecord = null
         rollingMode = false

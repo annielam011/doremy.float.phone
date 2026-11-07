@@ -7,8 +7,8 @@ const POLL_MS = 120;
 const SILENCE_MS = 3000;
 const NO_SPEECH_RESTART_MS = 60000;
 const USER_RMS_THRESHOLD = 520;
-const BARGE_IN_RMS_THRESHOLD = 900;
-const BARGE_IN_GRACE_MS = 700;
+const BARGE_IN_RMS_THRESHOLD = 1800;
+const BARGE_IN_GRACE_MS = 900;
 
 type ShellRecorder = {
     startNativeFreeRecord?: () => boolean;
@@ -136,10 +136,8 @@ export function useFreeConversation({
                 return;
             }
 
-            const desiredPhase = state === "AI_SPEAKING" || (phaseRef.current === "assistant" && heardVoiceRef.current)
-                ? "assistant"
-                : "user";
-            // 角色说完且用户没有插话时切新录音；若已检测到插话，必须保留当前录音直到静音 3 秒。
+            const desiredPhase = state === "AI_SPEAKING" ? "assistant" : "user";
+            // 角色说完且用户没有插话时切新录音；打断触发后录音 phase 已切成 user。
             if (recordingRef.current && phaseRef.current !== desiredPhase && !heardVoiceRef.current) {
                 cancelRecording();
             }
@@ -160,11 +158,23 @@ export function useFreeConversation({
             const voiced = !inGrace && rms >= threshold;
 
             if (voiced) {
+                // 角色播报期的录音只用于判断“用户开口”，绝不送去转写：一旦触发，
+                // 先停角色、丢掉含扬声器回声的缓冲，再立刻开一段纯用户录音。
+                if (phaseRef.current === "assistant" && !heardVoiceRef.current) {
+                    callbacksRef.current.onSpeechStart(true);
+                    cancelRecording();
+                    if (!startRecording("user")) {
+                        callbacksRef.current.onError("打断后无法重新开启麦克风。");
+                        return;
+                    }
+                    heardVoiceRef.current = true;
+                    lastVoiceAtRef.current = now;
+                    return;
+                }
                 lastVoiceAtRef.current = now;
                 if (!heardVoiceRef.current) {
-                    const interrupting = state === "AI_SPEAKING";
                     heardVoiceRef.current = true;
-                    callbacksRef.current.onSpeechStart(interrupting);
+                    callbacksRef.current.onSpeechStart(false);
                 }
                 return;
             }

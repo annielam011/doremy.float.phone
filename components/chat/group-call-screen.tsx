@@ -13,6 +13,7 @@ import { createSTTSession, type STTSession } from "@/lib/stt-service";
 import { resolveVoiceConfig, synthesizeSpeech, playAudioBlob, playAudioBlobViaMediaElement, setCallAudioSessionActive } from "@/lib/tts-service";
 import { isCallRecordingSupported, resolveCloudSttConfig } from "@/lib/stt-cloud";
 import { useHoldToTalk } from "./use-hold-to-talk";
+import { useFreeConversation } from "./use-free-conversation";
 import { suspendKeepAliveForCall, resumeKeepAliveAfterCall } from "@/lib/use-weixin-bridge";
 import { BilingualTextBlock } from "./message-bubble";
 import { splitBilingualText } from "@/lib/bilingual-text";
@@ -90,6 +91,8 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     const [subtitles, setSubtitles] = useState<SubtitleEntry[]>([]);
     const [interimText, setInterimText] = useState("");
     const [isMuted, setIsMuted] = useState(false);
+    const [freeConversation, setFreeConversation] = useState(false);
+    const freeConversationRef = useRef(false);
     const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice");
     const [typedText, setTypedText] = useState("");
     // Track who is currently speaking (for video mode highlight)
@@ -101,6 +104,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     const callStartRef = useRef<number>(0);
     const stateRef = useRef<string>("CONNECTING");
     const interimTextRef = useRef<string>("");
+    const freeInterruptedRef = useRef(false);
     // 时长的 ref 快照：同步给原生浮窗时读，避免把每秒变化的 callDuration 塞进 effect 依赖
     const callDurationRef = useRef(0);
     // 自动搭话的通知口：runConversationTurn 定义在 useCallAutoChat 之前，
@@ -153,6 +157,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     }, [session.voiceBackground]);
 
     // Keep refs in sync
+    freeConversationRef.current = freeConversation;
     useEffect(() => { stateRef.current = callState; }, [callState]);
     useEffect(() => { callDurationRef.current = callDuration; }, [callDuration]);
 
@@ -231,8 +236,8 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     const stateLabel = (): string => {
         switch (callState) {
             case "CONNECTING": return initiator === "character" ? "来电..." : "正在呼叫...";
-            case "IDLE": return isMuted && !holdToTalk ? "已静音" : (holdToTalk && inputMode === "voice" ? "按住麦克风说话" : "通话中");
-            case "USER_SPEAKING": return holdToTalk ? "松开发送" : "正在聆听...";
+            case "IDLE": return freeConversation ? "自由对话中" : isMuted && !holdToTalk ? "已静音" : (holdToTalk && inputMode === "voice" ? "按住麦克风说话" : "通话中");
+            case "USER_SPEAKING": return freeConversation ? "正在聆听..." : holdToTalk ? "松开发送" : "正在聆听...";
             case "PROCESSING": return holdToTalk && holdInput.recState === "transcribing" ? "识别中..." : "对方正在思考...";
             case "AI_SPEAKING": return "对方正在说话...";
             case "ENDED": return "通话已结束";
@@ -241,6 +246,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
 
     // ── Conversation turn ────────────────────────────
     const runConversationTurn = useCallback(async (userText?: string) => {
+        freeInterruptedRef.current = false;
         if (userText) {
             // 用户开口：自动搭话重新计数（上限按「你开口后」重新算）
             autoChatNotifyRef.current?.userSpoke();
@@ -305,13 +311,14 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
                 }]);
 
                 // TTS with this character's own voice config
+                freeInterruptedRef.current = false;
                 setCallState("AI_SPEAKING");
                 setSpeakingCharId(r.characterId);
                 const voiceConfig = resolveVoiceConfig(r.characterId);
                 if (voiceConfig && speechText.trim()) {
                     try {
                         const audioBlob = await synthesizeSpeech(speechText, voiceConfig);
-                        if (stateRef.current === "ENDED") return;
+                        if (stateRef.current === "ENDED" || freeInterruptedRef.current) return;
                         if (audioBlob) {
                             // 落库留档：音频进媒体库，引用写进这条消息，供「通话统计」复听原音。
                             // 群通话每个角色各自合成（音色也可能不同），所以逐条挂、不合并。
@@ -335,9 +342,11 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
                         console.warn("[GroupCall] TTS failed:", e);
                     }
                 }
+                if (freeInterruptedRef.current) return;
                 setSpeakingCharId(null);
             }
 
+            if (freeInterruptedRef.current) return;
             if (stateRef.current !== "ENDED") {
                 // 说完一轮：安排下一次自动搭话
                 autoChatNotifyRef.current?.assistantSpoke(true);
@@ -345,6 +354,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
             }
         } catch (error: any) {
             console.error("[GroupCall] Error:", error);
+            if (freeInterruptedRef.current) return;
             if (stateRef.current !== "ENDED") {
                 setSubtitles(prev => [...prev, {
                     id: `err-${Date.now()}`, role: "assistant",
@@ -421,6 +431,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     }, [androidTextInputOnly, holdToTalk, callState, isMuted, inputMode, startListening]);
 
     const handleInputModeToggle = useCallback(() => {
+        if (freeConversationRef.current) setFreeConversation(false);
         if (androidTextInputOnly) {
             if (sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
             setInterimText("");
@@ -449,7 +460,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     // 按住说话（非 iOS）：按下录音，松开转写后走对话轮。群聊无单角色绑定，
     // 识别配置取第一个可用的 OpenAI 兼容语音配置。
     const holdInput = useHoldToTalk({
-        canStart: () => stateRef.current === "IDLE",
+        canStart: () => !freeConversationRef.current && stateRef.current === "IDLE",
         onRecordingStart: () => {
             setInterimText("");
             if (stateRef.current === "IDLE") setCallState("USER_SPEAKING");
@@ -466,10 +477,36 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
         },
     });
 
+    const freeInput = useFreeConversation({
+        enabled: freeConversation && !isVideo,
+        muted: isMuted || inputMode !== "voice" || minimized,
+        callStateRef: stateRef,
+        characterId: characters[0]?.id || "",
+        onSpeechStart: (interruptingAssistant) => {
+            freeInterruptedRef.current = interruptingAssistant;
+            if (interruptingAssistant) {
+                audioAbortRef.current?.();
+                audioAbortRef.current = null;
+                setSpeakingCharId(null);
+            }
+            setInterimText("");
+            setCallState("USER_SPEAKING");
+        },
+        onTranscribeStart: () => setCallState("PROCESSING"),
+        onTranscript: (text) => { freeInterruptedRef.current = false; void runConversationTurn(text); },
+        onError: (message) => {
+            freeInterruptedRef.current = false;
+            setSubtitles(prev => [...prev, { id: `free-error-${Date.now()}`, role: "assistant", text: `⚠️ ${message}` }]);
+            if (stateRef.current !== "ENDED") setCallState("IDLE");
+        },
+    });
+
     // ── Hangup ──────────────────────────────────────
     const handleHangup = useCallback(() => {
         // 挂断时收掉安卓壳的原生浮窗
         stopShellCallOverlay();
+        freeInput.stop();
+        setFreeConversation(false);
         setCallState("ENDED");
         if (sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
         if (audioAbortRef.current) { audioAbortRef.current(); audioAbortRef.current = null; }
@@ -481,7 +518,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
         });
 
         setTimeout(() => onEnd(), 1500);
-    }, [session.id, callDuration, onEnd, callTypeLabel]);
+    }, [session.id, callDuration, onEnd, callTypeLabel, freeInput.stop]);
 
     // 待发送队列：角色说话/思考时发来的消息先排队，空闲后自动补发，
     // 不再像从前那样忙就直接丢掉（浮窗回复条尤其容易空发）。
@@ -500,6 +537,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
         runTurn: () => { void runConversationTurn(); },
         beforeTrigger: () => {
             // 触发前先停掉在听的识别，免得把角色自己的声音录进去
+            if (freeConversationRef.current) setFreeConversation(false);
             if (sttRef.current) {
                 sttRef.current.abort();
                 sttRef.current = null;
@@ -518,11 +556,12 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
         setCallAudioSessionActive(true);
         return () => {
             stateRef.current = "ENDED";
+            freeInput.stop();
             if (sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
             if (audioAbortRef.current) { audioAbortRef.current(); audioAbortRef.current = null; }
             setCallAudioSessionActive(false);
         };
-    }, []);
+    }, [freeInput.stop]);
 
     // 安卓壳原生浮窗：切到别的 App 时挂一个能浮在上层的小窗。
     // 三个通话屏共用同一个 hook；放在 handleHangup 之后，避免 const 的暂时性死区。
@@ -615,7 +654,8 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
                             }
                             aria-label={inputMode === "text" ? "切换到语音输入" : "按住说话"}
                             title={inputMode === "text" ? "切换到语音输入" : "按住说话"}
-                            {...(inputMode === "voice" ? holdInput.pressHandlers : { onClick: handleInputModeToggle })}
+                            disabled={freeConversation && inputMode === "voice"}
+                            {...(inputMode === "voice" && !freeConversation ? holdInput.pressHandlers : { onClick: inputMode === "text" ? handleInputModeToggle : undefined })}
                         >
                             {inputMode === "text" ? (
                                 <span className="ui-call-input-text-icon">Aa</span>
@@ -927,6 +967,17 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
             {/* 自动搭话：没人出声时让群里随机某位主动找话说 */}
             {callState !== "CONNECTING" && callState !== "ENDED" && (
                 <CallAutoChatControl config={autoChat.config} onUpdate={autoChat.update} />
+            )}
+            {!isVideo && freeInput.supported && callState !== "CONNECTING" && callState !== "ENDED" && (
+                <button
+                    type="button"
+                    onClick={() => {
+                        freeInterruptedRef.current = false;
+                        setFreeConversation(value => !value);
+                    }}
+                    aria-pressed={freeConversation}
+                    style={{ position: "absolute", left: "50%", bottom: 92, transform: "translateX(-50%)", zIndex: 30, padding: "7px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,.35)", background: freeConversation ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.15)", color: freeConversation ? "#222" : "#fff", fontSize: 12 }}
+                >{freeConversation ? "自由对话已开启 · 点此关闭" : "开启自由对话"}</button>
             )}
 
             {onMinimize && callState !== "ENDED" && callState !== "CONNECTING" && (

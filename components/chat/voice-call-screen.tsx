@@ -800,7 +800,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
         runConversationTurn();
     }, [callState, runConversationTurn]);
 
-    // 按住说话（非 iOS）：按下录音，松开转写后走对话轮
+    // 自由对话：独立于下方按住说话，静音 3 秒自动转写。
     const freeInput = useFreeConversation({
         enabled: freeConversation,
         muted: isMuted || inputMode !== "voice" || minimized,
