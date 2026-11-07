@@ -116,6 +116,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const holdToTalk = holdToTalkRef.current;
     const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current);
     const androidTextInputOnly = androidTextInputOnlyRef.current;
+    const freeConversationSupported = !iosDevice && isCallRecordingSupported() && resolveCloudSttConfig(session.contactId) !== null;
     const playCallAudio = iosDevice ? playAudioBlob : playAudioBlobViaMediaElement;
     const keyboardOffsetStyle = useCallKeyboardOffsetStyle();
     const [callState, setCallState] = useState<CallState>("CONNECTING");
@@ -124,6 +125,9 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const [subtitles, setSubtitles] = useState<SubtitleEntry[]>([]);
     const [interimText, setInterimText] = useState("");
     const [isMuted, setIsMuted] = useState(false);
+    const [freeConversation, setFreeConversation] = useState(false);
+    const freeConversationRef = useRef(false);
+    freeConversationRef.current = freeConversation;
     const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice");
     const [typedText, setTypedText] = useState("");
     const [bgImageResolved, setBgImageResolved] = useState<string | null>(null);
@@ -172,6 +176,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const minimizedRef = useRef(false);
     const stateRef = useRef<string>("CONNECTING");
     const interimTextRef = useRef<string>("");  // ref 版本，闭包安全
+    const freeMicTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const freeSpeakingRef = useRef(false);
     const sttWarningShownRef = useRef(false);
     // 自动搭话：下一次可开口的时刻（毫秒时间戳）
     const autoChatDeadlineRef = useRef<number>(0);
@@ -570,12 +576,16 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                         audioAbortRef.current = abort;
                         await promise;
                         audioAbortRef.current = null;
+                        // 自由对话中用户开口会打断播报；不要让被打断的旧回合把状态抢回 IDLE。
+                        if (freeConversationRef.current && freeSpeakingRef.current) return;
                     }
                 } catch (e) {
                     console.warn("[VoiceCall] TTS failed:", e);
+                    if (freeConversationRef.current && freeSpeakingRef.current) return;
                 }
             }
 
+            if (freeConversationRef.current && freeSpeakingRef.current) return;
             if (stateRef.current !== "ENDED") {
                 emptyAutoTurnsRef.current = 0;
                 scheduleNextAutoChat();
@@ -637,6 +647,97 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
         }, 1000);
         return () => window.clearInterval(timer);
     }, [autoChatConfig, runConversationTurn]);
+
+    // ── 自由对话：原生录音音量检测，静音 3 秒后转写；与按住说话独立 ──
+
+    const stopFreeListening = useCallback((cancelRecording = true) => {
+        if (freeMicTimerRef.current) window.clearInterval(freeMicTimerRef.current);
+        freeMicTimerRef.current = null;
+        if (freeSilenceTimerRef.current) window.clearTimeout(freeSilenceTimerRef.current);
+        freeSilenceTimerRef.current = null;
+        if (cancelRecording) {
+            try { (window as any).AndroidShell?.cancelNativeRecord?.(); } catch { /* ignore */ }
+        }
+        freeSpeakingRef.current = false;
+    }, []);
+
+    const startFreeListening = useCallback(async () => {
+        if (!freeConversation || !holdToTalk || isMuted || callState === "ENDED" || callState === "CONNECTING") return;
+        if (freeMicTimerRef.current) return;
+        const shell = (window as any).AndroidShell;
+        if (!shell?.startNativeRecord || !shell?.getNativeRecordRms || !shell?.stopNativeRecord) {
+            setSubtitles(prev => [...prev, { id: `free-err-${Date.now()}`, role: "assistant", text: "自由对话需要支持实时录音的新版 App 壳；按住说话仍可继续使用。" }]);
+            setFreeConversation(false);
+            return;
+        }
+        if (!shell.startNativeRecord()) {
+            setSubtitles(prev => [...prev, { id: `free-err-${Date.now()}`, role: "assistant", text: "无法开启麦克风，请检查 App 的麦克风权限。" }]);
+            setFreeConversation(false);
+            return;
+        }
+        freeSpeakingRef.current = false;
+        let lastVoiceAt = 0;
+        const speechStartedAt = Date.now();
+        let hasSpoken = false;
+        freeMicTimerRef.current = window.setInterval(() => {
+            const rms = Number(shell.getNativeRecordRms()) || 0;
+            const voiced = rms > 520;
+            if (voiced) {
+                lastVoiceAt = Date.now();
+                hasSpoken = true;
+                freeSpeakingRef.current = true;
+                if (stateRef.current === "AI_SPEAKING") {
+                    audioAbortRef.current?.();
+                    audioAbortRef.current = null;
+                    setCallState("USER_SPEAKING");
+                } else if (stateRef.current === "IDLE") setCallState("USER_SPEAKING");
+            } else if (freeSpeakingRef.current && lastVoiceAt && Date.now() - lastVoiceAt >= 3000) {
+                stopFreeListening(false);
+                const base64 = String(shell.stopNativeRecord() || "");
+                freeSpeakingRef.current = false;
+                if (!base64) { setCallState("IDLE"); return; }
+                const binary = atob(base64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                const blob = new Blob([bytes], { type: "audio/wav" });
+                const config = resolveCloudSttConfig(session.contactId);
+                if (!config) {
+                    setSubtitles(prev => [...prev, { id: `free-err-${Date.now()}`, role: "assistant", text: "自由对话需要配置兼容的云端语音识别。" }]);
+                    setCallState("IDLE");
+                    return;
+                }
+                setCallState("PROCESSING");
+                void import("@/lib/stt-cloud").then(({ transcribeAudioBlob }) => transcribeAudioBlob(blob, config)).then(text => {
+                    if (stateRef.current === "ENDED") return;
+                    if (text.trim()) void runConversationTurn(text.trim());
+                    else setCallState("IDLE");
+                }).catch(error => {
+                    console.warn("[VoiceCall] free conversation STT failed", error);
+                    setCallState("IDLE");
+                });
+            }
+            if (!hasSpoken && Date.now() - speechStartedAt > 60000) {
+                if (freeMicTimerRef.current) window.clearInterval(freeMicTimerRef.current);
+                freeMicTimerRef.current = null;
+                try { shell.cancelNativeRecord(); } catch { /* ignore */ }
+                setSubtitles(prev => [...prev, { id: `free-timeout-${Date.now()}`, role: "assistant", text: "自由对话录音超时，已自动停止。" }]);
+                setCallState("IDLE");
+            }
+        }, 120);
+    }, [freeConversation, holdToTalk, isMuted, callState, session.contactId, runConversationTurn, stopFreeListening]);
+
+    useEffect(() => {
+        if (freeConversation && isMuted) {
+            stopFreeListening(true);
+            return;
+        }
+        if (freeConversation && (callState === "IDLE" || callState === "AI_SPEAKING" || callState === "USER_SPEAKING")) void startFreeListening();
+        return () => {
+            if (!freeConversation || callState === "CONNECTING" || callState === "ENDED") {
+                stopFreeListening(true);
+            }
+        };
+    }, [freeConversation, isMuted, callState, startFreeListening, stopFreeListening]);
 
     // ── Auto-listen: 进入 IDLE 自动开始监听 ────────
 
@@ -736,7 +837,6 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             }, 500);
             return () => clearTimeout(timer);
         }
-        // 静音时停止监听
         if (isMuted && sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
@@ -813,6 +913,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
         // 挂断时收掉原生浮窗（安卓壳里）
         stopShellCallOverlay();
         setCallState("ENDED");
+        stopFreeListening(true);
+
+        // 挂断时停止自由对话轮询并释放录音
+        stopFreeListening(true);
 
         // Stop any ongoing STT
         if (sttRef.current) {
@@ -841,7 +945,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
         // Delay then close
         setTimeout(() => onEnd(), 1500);
-    }, [session.id, callDuration, onEnd]);
+    }, [session.id, callDuration, onEnd, stopFreeListening]);
 
     // 保持 ref 指向最新的 handleHangup（原生浮窗的挂断事件要调到它）
     useEffect(() => { hangupRef.current = handleHangup; }, [handleHangup]);
@@ -1415,7 +1519,22 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                     </div>
                 )}
 
-                {/* Bottom controls */}
+                {freeConversationSupported && callState !== "CONNECTING" && callState !== "ENDED" && (
+                <button
+                    type="button"
+                    onClick={() => {
+                        setFreeConversation(value => !value);
+                        if (freeConversation) {
+                            stopFreeListening(true);
+                            if (stateRef.current === "USER_SPEAKING") setCallState("IDLE");
+                        }
+                    }}
+                    style={{ alignSelf: "center", marginBottom: 8, padding: "7px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,.35)", background: freeConversation ? "rgba(255,255,255,.9)" : "rgba(255,255,255,.15)", color: freeConversation ? "#222" : "#fff", fontSize: 12 }}
+                    aria-pressed={freeConversation}
+                >{freeConversation ? "自由对话已开启 · 点此关闭" : "开启自由对话"}</button>
+            )}
+
+            {/* Bottom controls */}
                 <div
                     className="flex justify-center items-center gap-[40px] p-5"
                     style={{ paddingBottom: "max(30px, env(safe-area-inset-bottom))" }}

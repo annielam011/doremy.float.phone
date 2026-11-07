@@ -31,6 +31,10 @@ class NativeAudioRecorder(private val context: Context) {
     @Volatile
     private var isRecording = false
     private val pcmBuffer = ByteArrayOutputStream()
+    @Volatile private var latestRms = 0.0
+
+    /** 当前音量能量（RMS），供自由对话检测用户开口；范围约 0..32768。 */
+    fun getRms(): Double = latestRms
 
     /**
      * 开始录音。
@@ -59,6 +63,7 @@ class NativeAudioRecorder(private val context: Context) {
         }
 
         pcmBuffer.reset()
+        latestRms = 0.0
         audioRecord = recorder
         isRecording = true
 
@@ -69,6 +74,16 @@ class NativeAudioRecorder(private val context: Context) {
             while (isRecording) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0) {
+                    var sum = 0.0
+                    var samples = 0
+                    var i = 0
+                    while (i + 1 < read) {
+                        val sample = ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xff)).toShort().toInt()
+                        sum += sample.toDouble() * sample
+                        samples++
+                        i += 2
+                    }
+                    latestRms = if (samples > 0) kotlin.math.sqrt(sum / samples) else 0.0
                     synchronized(pcmBuffer) { pcmBuffer.write(buffer, 0, read) }
                 }
             }
@@ -88,6 +103,7 @@ class NativeAudioRecorder(private val context: Context) {
 
         try { recordingThread?.join(2000) } catch (_: Exception) {}
         recordingThread = null
+        latestRms = 0.0
 
         audioRecord?.stop()
         audioRecord?.release()
