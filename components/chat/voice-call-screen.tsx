@@ -1467,7 +1467,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                             setFreeConversation(value => !value);
                         }}
                         aria-pressed={freeConversation}
-                        style={{ alignSelf: "center", marginBottom: 6, padding: "7px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,.35)", background: freeConversation ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.15)", color: freeConversation ? "#222" : "#fff", fontSize: 12 }}
+                        style={{ alignSelf: "center", marginBottom: 14, padding: "7px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,.35)", background: freeConversation ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.15)", color: freeConversation ? "#222" : "#fff", fontSize: 12 }}
                     >{freeConversation ? "自由对话已开启 · 点此关闭" : "开启自由对话"}</button>
                 )}
 
