@@ -198,11 +198,15 @@ export function useFreeConversation({
                     .then(text => {
                         if (generation !== generationRef.current || !enabledRef.current) return;
                         transcribingRef.current = false;
-                        if (text.trim()) callbacksRef.current.onTranscript(text.trim());
-                        else callbacksRef.current.onError("没有识别到说话内容。");
+                        if (text.trim()) {
+                            callbacksRef.current.onTranscript(text.trim());
+                        } else {
+                            callbacksRef.current.onError("没有识别到说话内容。");
+                        }
                     })
                     .catch(error => {
                         if (generation === generationRef.current && enabledRef.current) {
+                            transcribingRef.current = false;
                             callbacksRef.current.onError(error instanceof Error ? error.message : String(error));
                         }
                     })

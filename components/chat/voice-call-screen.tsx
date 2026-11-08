@@ -814,12 +814,20 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 audioAbortRef.current = null;
             }
             setInterimText("");
-            setCallState("USER_SPEAKING");
+            if (stateRef.current !== "PROCESSING") {
+                setCallState("USER_SPEAKING");
+            }
         },
-        onTranscribeStart: () => setCallState("PROCESSING"),
+        onTranscribeStart: () => {
+            if (stateRef.current !== "ENDED") {
+                setCallState("PROCESSING");
+            }
+        },
         onTranscript: (text) => {
             freeInterruptedRef.current = false;
-            void runConversationTurn(text);
+            if (stateRef.current !== "ENDED") {
+                void runConversationTurn(text);
+            }
         },
         onError: (message) => {
             freeInterruptedRef.current = false;
