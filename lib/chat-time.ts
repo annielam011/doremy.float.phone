@@ -13,17 +13,13 @@ export function isSameChatLocalDate(leftDateStr: string, rightDateStr: string): 
         && left.getDate() === right.getDate();
 }
 
-/** 聊天中每日第一条时间分隔：始终带具体日期，避免“今天”仍看不到几月几日。 */
+/** 聊天中每日第一条时间分隔：显示完整年月日和时间。 */
 export function formatChatUiDateTime(dateStr: string): string {
     const date = new Date(dateStr);
     if (Number.isNaN(date.getTime())) return "";
 
-    const now = new Date();
     const hhmm = `${padTwo(date.getHours())}:${padTwo(date.getMinutes())}`;
-    const dateLabel = date.getFullYear() === now.getFullYear()
-        ? `${date.getMonth() + 1}月${date.getDate()}日`
-        : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
-    return `${dateLabel} ${hhmm}`;
+    return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${hhmm}`;
 }
 
 export function formatChatUiTime(dateStr: string): string {
