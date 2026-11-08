@@ -61,7 +61,7 @@ import { getMusicControlBridge } from "@/lib/music-control-bridge";
 import { findPlayableMatch, getNeteaseLyrics, getNeteaseSongDetail } from "@/lib/music-service";
 import { approveMemoryWriteRequest } from "@/lib/tool-executor";
 import type { MemoryWriteRequest, ToolResult } from "@/lib/tool-executor";
-import { formatChatUiTime } from "@/lib/chat-time";
+import { formatChatUiDateTime, formatChatUiTime, isSameChatLocalDate } from "@/lib/chat-time";
 import { parseActionTags } from "@/lib/action-parser";
 import { kvGet, kvSet, kvRemove } from "@/lib/kv-db";
 import { creditWalletBalance, payWithWalletBalance } from "@/lib/wallet-storage";
@@ -504,6 +504,8 @@ function parseCallTime(value?: string | null): number {
 
 function shouldShowTimestamp(currentMsg: string, prevMsg: string | null): boolean {
     if (!prevMsg) return true; // First message always shows time
+    // 跨自然日必须显示分隔，即使两条消息刚好紧邻零点、间隔不足一分钟。
+    if (!isSameChatLocalDate(currentMsg, prevMsg)) return true;
     return new Date(currentMsg).getTime() - new Date(prevMsg).getTime() > TIME_GAP;
 }
 
@@ -5907,7 +5909,13 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                             const showTime = !prevTime || shouldShowTimestamp(turn.createdAt, prevTime);
                             return (
                             <Fragment key={turn.id}>
-                            {showTime && <div className="chat-offline-time">{formatChatUiTime(turn.createdAt)}</div>}
+                            {showTime && (
+                                <div className="chat-offline-time">
+                                    {!prevTime || !isSameChatLocalDate(turn.createdAt, prevTime)
+                                        ? formatChatUiDateTime(turn.createdAt)
+                                        : formatChatUiTime(turn.createdAt)}
+                                </div>
+                            )}
                             <div className="chat-offline-turn">
                                 <div className="chat-offline-entry" data-role="user" style={offlineDisplay.userContent.trim() ? undefined : { display: "none" }}>
                                     {/* 头像占位：默认 display:none（见 chat.css），供自定义 CSS 显示 */}
@@ -6264,7 +6272,9 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                             {showTime && (
                                 <div className="flex justify-center w-full">
                                     <span className="chat-sys-msg py-[2px] px-2 rounded select-none">
-                                        {formatChatUiTime(msg.createdAt)}
+                                        {!prevVisibleMsg || !isSameChatLocalDate(msg.createdAt, prevVisibleMsg.createdAt)
+                                            ? formatChatUiDateTime(msg.createdAt)
+                                            : formatChatUiTime(msg.createdAt)}
                                     </span>
                                 </div>
                             )}
