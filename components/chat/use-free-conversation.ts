@@ -4,11 +4,11 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { resolveCloudSttConfig, transcribeAudioBlob } from "@/lib/stt-cloud";
 
 const POLL_MS = 120;
-const SILENCE_MS = 3000;
+const SILENCE_MS = 1600;
 const NO_SPEECH_RESTART_MS = 60000;
 const USER_RMS_THRESHOLD = 520;
-const BARGE_IN_RMS_THRESHOLD = 1800;
-const BARGE_IN_GRACE_MS = 900;
+const BARGE_IN_RMS_THRESHOLD = 1100;
+const BARGE_IN_GRACE_MS = 300;
 
 type ShellRecorder = {
     startNativeFreeRecord?: () => boolean;

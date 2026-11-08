@@ -803,7 +803,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     // 自由对话：独立于下方按住说话，静音 3 秒自动转写。
     const freeInput = useFreeConversation({
         enabled: freeConversation,
-        muted: isMuted || inputMode !== "voice" || minimized,
+        muted: isMuted || inputMode !== "voice", // 缩成悬浮窗也保持自由对话录音与转写
         callStateRef: stateRef,
         characterId: session.contactId,
         onSpeechStart: (interruptingAssistant) => {

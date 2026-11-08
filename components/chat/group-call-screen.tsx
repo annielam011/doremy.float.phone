@@ -479,7 +479,7 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
 
     const freeInput = useFreeConversation({
         enabled: freeConversation && !isVideo,
-        muted: isMuted || inputMode !== "voice" || minimized,
+        muted: isMuted || inputMode !== "voice", // 缩成悬浮窗也保持自由对话录音与转写
         callStateRef: stateRef,
         characterId: characters[0]?.id || "",
         onSpeechStart: (interruptingAssistant) => {
